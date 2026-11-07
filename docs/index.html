@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robinhood Chain Safety Scanner - paste a contract, get a verdict</title>
+<meta name="description" content="Free safety scan for Robinhood Chain contracts. Runs entirely in your browser: chainId, contract code, upgradeable proxy, Blockscout verification, token identity. CLEAR / CAUTION / BLOCKED / UNKNOWN, with reasons. Sellability is never faked.">
+<style>
+  :root{--bg:#0b0f0c;--card:#141a14;--line:#243324;--txt:#e8f0e8;--dim:#9db89d;--green:#00c853;--clear:#00e676;--caution:#ffca28;--blocked:#ff5252;--unknown:#b0bec5}
+  *{box-sizing:border-box}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:0 auto;padding:28px 16px 48px;background:var(--bg);color:var(--txt)}
+  h1{font-size:25px;line-height:1.2;margin:0 0 6px}
+  .sub{color:var(--dim);line-height:1.5;margin-bottom:20px}
+  label{display:block;margin:14px 0 6px;font-weight:600}
+  input,select{width:100%;padding:13px;border-radius:8px;border:1px solid #2a3a2a;background:#121812;color:#fff;font-size:16px}
+  .toggle{display:flex;gap:8px;margin-top:6px}
+  .toggle button{flex:1;margin:0;padding:11px;border-radius:8px;border:1px solid #2a3a2a;background:#121812;color:var(--dim);font-weight:700;cursor:pointer}
+  .toggle button.on{background:var(--green);color:#041204;border-color:var(--green)}
+  button#go{margin-top:16px;padding:14px 20px;border:0;border-radius:8px;background:var(--green);color:#041204;font-weight:800;font-size:16px;cursor:pointer;width:100%}
+  button#go:disabled{opacity:.6}
+  .card{margin-top:20px;padding:16px;border-radius:12px;background:var(--card);border:1px solid var(--line)}
+  .verdict{font-size:30px;font-weight:800;letter-spacing:.5px;padding:10px 14px;border-radius:10px;text-align:center}
+  .verdict.CLEAR{color:#041204;background:var(--clear)}
+  .verdict.CAUTION{color:#1a1400;background:var(--caution)}
+  .verdict.BLOCKED{color:#fff;background:var(--blocked)}
+  .verdict.UNKNOWN{color:#102027;background:var(--unknown)}
+  .addr{word-break:break-all;font-size:14px;margin:12px 0 2px}
+  .meta{color:var(--dim);font-size:14px;line-height:1.6;margin:8px 0}
+  .meta b{color:var(--txt)}
+  ul.reasons{padding-left:18px;margin:10px 0}
+  ul.reasons li{margin:7px 0;line-height:1.5;font-size:15px}
+  .lvl{font-size:11px;font-weight:800;padding:2px 6px;border-radius:4px;background:#243324;color:var(--dim);vertical-align:2px}
+  a{color:var(--clear)}
+  .note{color:var(--dim);font-size:13px;margin-top:14px;line-height:1.6}
+  pre{white-space:pre-wrap;word-break:break-all;background:var(--bg);padding:10px;border-radius:8px;font-size:12px;overflow:auto}
+  footer{margin-top:32px;border-top:1px solid var(--line);padding-top:16px;color:var(--dim);font-size:13px;line-height:1.7}
+</style>
+</head>
+<body>
+<h1>Robinhood Chain Safety Scanner</h1>
+<div class="sub">Paste a contract. Get CLEAR / CAUTION / BLOCKED / UNKNOWN with receipts. Read-only, never signs, never asks for a key. Sellability is not faked, see the note in every report.</div>
+
+<label for="addr">Contract address</label>
+<input id="addr" placeholder="0x..." autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="text">
+<label>Chain</label>
+<div class="toggle" role="group" aria-label="Chain">
+  <button type="button" id="ch-main" class="on">Robinhood Chain (4663)</button>
+  <button type="button" id="ch-test">Testnet (46630)</button>
+</div>
+<button id="go">Scan contract</button>
+<div id="out"></div>
+
+<div class="note"><b>How it works / limits:</b> this whole scan runs from your own browser. The page makes read-only JSON-RPC calls straight from your device to the Robinhood Chain RPC and to Blockscout, there is no scanner server in between. If your network, the RPC, or Blockscout blocks or fails a call, the verdict says UNKNOWN or "could not check" for that item, never a made-up negative: a failed read is evidence about the network, not about the contract. A CLEAR means nothing this scanner checks tripped. It is not a guarantee and not an audit.</div>
+
+<footer>
+  Free basic scan. Pro (in the works): unlimited scans, new-pool alerts, history.<br>
+  Code and full method: <a href="https://github.com/georgeonweb3/robinhood-scanner">github.com/georgeonweb3/robinhood-scanner</a><br>
+  Built by George Agbe in Lagos. This is not financial advice.
+</footer>
+
+<script>
+"use strict";
+/* =====================================================================
+   Pure logic below (isValidAddress, normalizeAddress, decUint,
+   decAddress, decString, evaluateVerdict, chain config, slots) is an
+   inline DUPLICATE of docs/scan-core.js, which is itself a faithful
+   port of ../scanner/core.py + ../scanner/abi.py. This page must stay
+   one self-contained file (no external assets), so the functions live
+   here too. docs/test_verdict.mjs tests the canonical scan-core.js
+   copy. Keep the two copies in sync.
+   ===================================================================== */
+const CHAINS = {
+  "robinhood": {
+    key: "robinhood", name: "Robinhood Chain", chainId: 4663,
+    rpc: "https://rpc.mainnet.chain.robinhood.com",
+    explorerUrl: "https://robinhoodchain.blockscout.com",
+    blockscoutApi: "https://robinhoodchain.blockscout.com/api"
+  },
+  "robinhood-testnet": {
+    key: "robinhood-testnet", name: "Robinhood Chain Testnet", chainId: 46630,
+    rpc: "https://rpc.testnet.chain.robinhood.com",
+    explorerUrl: "https://robinhoodchain.blockscout.com",
+    blockscoutApi: "https://robinhoodchain.blockscout.com/api"
+  }
+};
+const EIP1967_IMPL_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
+const EIP1967_ADMIN_SLOT = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103";
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+
+function isValidAddress(addr) { return typeof addr === "string" && ADDRESS_RE.test(addr.trim()); }
+function normalizeAddress(addr) { return addr.trim().toLowerCase(); }
+
+function decUint(hexdata) {
+  if (!hexdata || hexdata === "0x") return null;
+  try { return BigInt("0x" + hexdata.slice(2, 66)); } catch (e) { return null; }
+}
+function decAddress(hexdata) {
+  if (!hexdata || hexdata.length < 66) return null;
+  return "0x" + hexdata.slice(26, 66).toLowerCase();
+}
+function decString(hexdata) {
+  if (!hexdata || hexdata === "0x") return null;
+  try {
+    const hex = hexdata.slice(2);
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+    if (bytes.length >= 64) {
+      let length = 0n;
+      for (let i = 32; i < 64; i++) length = (length << 8n) | BigInt(bytes[i]);
+      if (length >= 0n && length <= 10000n && bytes.length >= 64 + Number(length)) {
+        return new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(64, 64 + Number(length)));
+      }
+    }
+    let end = bytes.length;
+    while (end > 0 && bytes[end - 1] === 0) end--;
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, end));
+  } catch (e) { return null; }
+}
+
+function reason(code, level, message) { return { code, level, message }; }
+
+function evaluateVerdict(checks) {
+  const reasons = [];
+  const deployment = checks.deployment || {};
+  const verification = checks.verification || {};
+  const identity = checks.identity || {};
+  const chainCheck = checks.chain || {};
+
+  let rpcFailed = false;
+  if (checks.rpc_ok === false) rpcFailed = true;
+  if (deployment.code_read_failed) rpcFailed = true;
+  if (chainCheck.transport_failed) rpcFailed = true;
+
+  if (rpcFailed) {
+    const detail = checks.rpc_error || deployment.error || chainCheck.error || "RPC unreachable";
+    reasons.push(reason("RPC_UNREACHABLE", "unknown",
+      "RPC transport failed (" + detail + ") - the contract was NOT checked. " +
+      "This is evidence about the network/endpoint, not about this address. " +
+      "Re-run when the RPC path is healthy."));
+    return { verdict: "UNKNOWN", reasons };
+  }
+
+  if (chainCheck.matches === false) {
+    reasons.push(reason("CHAIN_ID_MISMATCH", "caution",
+      "RPC returned chainId " + chainCheck.actual + " but expected " + chainCheck.expected +
+      " for " + chainCheck.name + " - endpoint may be pointing at the wrong chain, " +
+      "results should not be trusted as Robinhood data"));
+  }
+
+  if (deployment.is_contract === false) {
+    reasons.push(reason("NOT_A_CONTRACT", "block",
+      "address has no contract code on this chain on a successful read (wrong address or wrong chain)"));
+    return { verdict: "BLOCKED", reasons };
+  }
+
+  if (deployment.is_contract === null || deployment.is_contract === undefined) {
+    reasons.push(reason("DEPLOYMENT_UNKNOWN", "unknown",
+      "deployment could not be determined - no successful eth_getCode read"));
+    return { verdict: "UNKNOWN", reasons };
+  }
+
+  if (deployment.code_size_bytes !== null && deployment.code_size_bytes !== undefined) {
+    reasons.push(reason("CONTRACT_EXISTS", "info",
+      "contract code exists (" + deployment.code_size_bytes + " bytes)"));
+  }
+
+  if (deployment.is_proxy_eip1967) {
+    reasons.push(reason("UPGRADEABLE_PROXY", "caution",
+      "upgradeable proxy (EIP-1967): implementation " + deployment.implementation +
+      " can be swapped after this check - re-verify at signing/trading time"));
+  }
+
+  const vstatus = verification.status || "unknown";
+  if (vstatus === "verified") {
+    reasons.push(reason("SOURCE_VERIFIED", "info", "source code verified on Blockscout"));
+  } else if (vstatus === "unverified") {
+    reasons.push(reason("UNVERIFIED_SOURCE", "caution",
+      "source code is NOT verified on Blockscout - nobody outside the project can read what this contract does"));
+  } else {
+    reasons.push(reason("VERIFICATION_UNCHECKED", "caution",
+      "verification status could not be checked (" + (verification.detail || "Blockscout unreachable") + ") - treat as unverified until confirmed"));
+  }
+
+  const owner = identity.owner;
+  if (owner) {
+    if (String(owner).toLowerCase() === ZERO_ADDRESS) {
+      reasons.push(reason("OWNER_RENOUNCED", "info", "owner() is the zero address (ownership renounced or no owner)"));
+    } else {
+      reasons.push(reason("OWNER_PRESENT", "info", "contract has an owner (" + owner + ") - check what the owner can change"));
+    }
+  }
+  if (identity.name || identity.symbol) {
+    reasons.push(reason("TOKEN_IDENTITY", "info",
+      "token identity: " + identity.name + " (" + identity.symbol + ") decimals=" +
+      identity.decimals + " totalSupply=" + identity.totalSupply));
+  } else {
+    reasons.push(reason("NO_TOKEN_METADATA", "info",
+      "no ERC20 name/symbol answered - may not be a standard ERC20, or metadata is on the implementation contract (proxy)"));
+  }
+
+  reasons.push(reason("SELLABILITY_NOT_PROVEN", "info",
+    "sellability / honeypot status is NOT proven by this scan: proving it needs a DEX router quote + eth_call buy/sell simulation against the actual pool, which depends on the token's pair and router. This scanner does not fake that verdict. Treat any token as unsellable until you test a small buy and sell on the DEX itself"));
+
+  const levels = new Set(reasons.map((r) => r.level));
+  if (levels.has("block")) return { verdict: "BLOCKED", reasons };
+  if (levels.has("unknown")) return { verdict: "UNKNOWN", reasons };
+  if (levels.has("caution")) return { verdict: "CAUTION", reasons };
+  return { verdict: "CLEAR", reasons };
+}
+
+/* =====================================================================
+   Network layer (browser version of scanner/core.py's Rpc + probing).
+   Read-only methods only: eth_chainId, eth_getCode, eth_getStorageAt,
+   eth_call. Nothing is ever signed or broadcast.
+   ===================================================================== */
+const SELECTORS = {
+  owner: "0x8da5cb5b",
+  name: "0x06fdde03",
+  symbol: "0x95d89b41",
+  decimals: "0x313ce567",
+  totalSupply: "0x18160ddd"
+};
+const RPC_TIMEOUT_MS = 15000;
+
+async function rpcCall(endpoint, method, params) {
+  // Mirrors the Python Rpc.call contract:
+  //  - success -> the JSON-RPC result
+  //  - JSON-RPC error on eth_call -> {__revert__: message}
+  //  - transport/HTTP/parse failure -> null (or {__error__} for eth_call)
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), RPC_TIMEOUT_MS);
+  try {
+    const resp = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      signal: ctrl.signal
+    });
+    clearTimeout(timer);
+    if (!resp.ok) {
+      return method === "eth_call" ? { __error__: "HTTP " + resp.status } : null;
+    }
+    const j = await resp.json();
+    if (j && j.error) {
+      const msg = (j.error && j.error.message) ? j.error.message : String(j.error);
+      return method === "eth_call" ? { __revert__: msg } : null;
+    }
+    return (j && "result" in j) ? j.result : null;
+  } catch (e) {
+    clearTimeout(timer);
+    const msg = (e && e.name === "AbortError") ? "request timed out" : String(e && e.message ? e.message : e);
+    return method === "eth_call" ? { __error__: msg } : null;
+  }
+}
+
+async function fetchVerification(address, chain) {
+  // Mirrors fetch_verification() in core.py: any failure -> status
+  // "unknown" (could not check), NEVER promoted to "unverified".
+  // A CORS rejection lands here as a thrown TypeError, same handling.
+  const url = chain.blockscoutApi + "/v2/smart-contracts/" + address;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12000);
+  try {
+    const resp = await fetch(url, { headers: { "Accept": "application/json" }, signal: ctrl.signal });
+    clearTimeout(timer);
+    if (resp.status === 404) {
+      return { status: "unknown", detail: "Blockscout returned 404 for " + address + " - could not confirm verification status (address may be unverified or not indexed)", source: url };
+    }
+    if (!resp.ok) {
+      return { status: "unknown", detail: "Blockscout HTTP " + resp.status + ": could not check verification", source: url };
+    }
+    const j = await resp.json();
+    if (j && j.is_verified === true) return { status: "verified", detail: "source verified on Blockscout", name: j.name || null, source: url };
+    if (j && j.is_verified === false) return { status: "unverified", detail: "Blockscout record exists but is_verified is false", name: j.name || null, source: url };
+    return { status: "unknown", detail: "Blockscout response did not carry a clear is_verified flag - could not check", source: url };
+  } catch (e) {
+    clearTimeout(timer);
+    const msg = (e && e.name === "AbortError") ? "request timed out" : String(e && e.message ? e.message : e);
+    return { status: "unknown", detail: "Blockscout unreachable: " + msg + " - could not check verification", source: url };
+  }
+}
+
+async function readView(endpoint, contract, selector, decoder) {
+  const res = await rpcCall(endpoint, "eth_call", [{ to: contract, data: selector }, "latest"]);
+  if (res === null || typeof res === "object" || res === "0x") return null;
+  return decoder(res);
+}
+
+async function scanAddress(address, chainKey) {
+  if (!isValidAddress(address)) {
+    return {
+      schema: "robinhood-scanner/1", address, chain: chainKey, verdict: "UNKNOWN",
+      reasons: [reason("INVALID_ADDRESS", "unknown", "address is not a valid 0x + 40 hex character EVM address - nothing was checked")],
+      checks: {}, error: "invalid_address"
+    };
+  }
+  const addr = normalizeAddress(address);
+  const chain = CHAINS[chainKey];
+  const rpc = chain.rpc;
+  const checks = {};
+
+  // 1. chainId verification
+  const chainIdRes = await rpcCall(rpc, "eth_chainId", []);
+  let actualChainId = null;
+  if (typeof chainIdRes === "string" && chainIdRes.startsWith("0x")) {
+    const parsed = parseInt(chainIdRes, 16);
+    if (!Number.isNaN(parsed)) actualChainId = parsed;
+  }
+  if (actualChainId === null) {
+    const chainError = "eth_chainId returned no result (transport failure, blocked request, or malformed response from " + rpc + ")";
+    checks.chain = { name: chain.name, expected: chain.chainId, actual: null, matches: null, transport_failed: true, error: chainError, rpc_endpoint: rpc };
+    checks.deployment = { is_contract: null, code_read_failed: true, error: chainError };
+    checks.verification = { status: "unknown", detail: "skipped - RPC unreachable" };
+    checks.identity = {};
+    checks.rpc_ok = false;
+    checks.rpc_error = "eth_chainId transport failure: " + chainError;
+    const v = evaluateVerdict(checks);
+    return { schema: "robinhood-scanner/1", address: addr, chain: chain.key, chain_name: chain.name, expected_chain_id: chain.chainId, verdict: v.verdict, reasons: v.reasons, checks };
+  }
+  checks.chain = { name: chain.name, expected: chain.chainId, actual: actualChainId, matches: actualChainId === chain.chainId, transport_failed: false, error: null, rpc_endpoint: rpc };
+
+  // 2. code exists / size
+  const code = await rpcCall(rpc, "eth_getCode", [addr, "latest"]);
+  const codeReadFailed = typeof code !== "string";
+  const codeHex = codeReadFailed ? "" : code.slice(2);
+  const isContract = codeReadFailed ? null : codeHex.length > 0;
+  const codeSize = codeReadFailed ? null : codeHex.length / 2;
+
+  // 3. proxy detection (only if contract exists)
+  let impl = null, admin = null;
+  if (isContract) {
+    const implRaw = await rpcCall(rpc, "eth_getStorageAt", [addr, EIP1967_IMPL_SLOT, "latest"]);
+    if (implRaw && typeof implRaw === "string") {
+      try { if (BigInt(implRaw) !== 0n) impl = decAddress(implRaw); } catch (e) { impl = null; }
+    }
+    const adminRaw = await rpcCall(rpc, "eth_getStorageAt", [addr, EIP1967_ADMIN_SLOT, "latest"]);
+    if (adminRaw && typeof adminRaw === "string") {
+      try { if (BigInt(adminRaw) !== 0n) admin = decAddress(adminRaw); } catch (e) { admin = null; }
+    }
+  }
+  checks.deployment = { is_contract: isContract, code_read_failed: codeReadFailed, code_size_bytes: codeSize, is_proxy_eip1967: impl !== null, implementation: impl, proxy_admin: admin };
+  checks.rpc_ok = !codeReadFailed;
+  if (codeReadFailed) checks.rpc_error = "eth_getCode transport failure - the RPC endpoint failed or returned malformed data";
+
+  // 4. verification via Blockscout (skipped when the RPC itself failed)
+  checks.verification = codeReadFailed
+    ? { status: "unknown", detail: "skipped - RPC failed" }
+    : await fetchVerification(addr, chain);
+
+  // 5. ERC20 + owner probes (only if contract)
+  const identity = { name: null, symbol: null, decimals: null, totalSupply: null, owner: null };
+  if (isContract) {
+    identity.name = await readView(rpc, addr, SELECTORS.name, decString);
+    identity.symbol = await readView(rpc, addr, SELECTORS.symbol, decString);
+    const dec = await readView(rpc, addr, SELECTORS.decimals, decUint);
+    identity.decimals = dec === null ? null : Number(dec);
+    const supply = await readView(rpc, addr, SELECTORS.totalSupply, decUint);
+    identity.totalSupply = supply === null ? null : supply.toString();
+    identity.owner = await readView(rpc, addr, SELECTORS.owner, decAddress);
+  }
+  checks.identity = identity;
+  checks.sellability = {
+    proven: false,
+    note: "Not proven by this scan. Needs DEX router + pool simulation. See reason SELLABILITY_NOT_PROVEN.",
+    method_needed: "Find the token's DEX pair/router on Robinhood Chain, quote a small buy, eth_call simulate buy then sell, check round-trip - that flow is router-specific and not faked here."
+  };
+
+  const v = evaluateVerdict(checks);
+  return {
+    schema: "robinhood-scanner/1", address: addr, chain: chain.key, chain_name: chain.name,
+    expected_chain_id: chain.chainId, explorer_url: chain.explorerUrl + "/address/" + addr,
+    verdict: v.verdict, reasons: v.reasons, checks
+  };
+}
+
+/* =====================================================================
+   UI
+   ===================================================================== */
+function esc(s) {
+  return String(s === null || s === undefined ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+let currentChain = "robinhood";
+const chMain = document.getElementById("ch-main");
+const chTest = document.getElementById("ch-test");
+function setChain(key) {
+  currentChain = key;
+  chMain.classList.toggle("on", key === "robinhood");
+  chTest.classList.toggle("on", key === "robinhood-testnet");
+}
+chMain.onclick = () => setChain("robinhood");
+chTest.onclick = () => setChain("robinhood-testnet");
+
+const out = document.getElementById("out");
+const btn = document.getElementById("go");
+
+function render(j, addrInput) {
+  const checks = j.checks || {};
+  const dep = checks.deployment || {};
+  const ident = checks.identity || {};
+  const ver = checks.verification || {};
+  const explorer = j.explorer_url || (CHAINS[j.chain] ? CHAINS[j.chain].explorerUrl + "/address/" + (j.address || addrInput) : null);
+  const reasons = (j.reasons || []).map((r) =>
+    "<li><span class=\"lvl\">" + esc(r.level.toUpperCase()) + "</span> <b>" + esc(r.code) + ":</b> " + esc(r.message) + "</li>").join("");
+  const meta = [];
+  meta.push("Contract: <b>" + esc(dep.is_contract === null || dep.is_contract === undefined ? "not determined" : dep.is_contract) + "</b>" +
+    " &middot; Size: <b>" + esc(dep.code_size_bytes === null || dep.code_size_bytes === undefined ? "-" : dep.code_size_bytes + " bytes") + "</b>" +
+    " &middot; Proxy: <b>" + esc(dep.is_proxy_eip1967 ? "yes (EIP-1967)" : "no") + "</b>");
+  meta.push("Token: <b>" + esc(ident.name || "-") + " (" + esc(ident.symbol || "-") + ")</b>" +
+    " &middot; Decimals: <b>" + esc(ident.decimals === null || ident.decimals === undefined ? "-" : ident.decimals) + "</b>" +
+    " &middot; Owner: <b>" + esc(ident.owner || "-") + "</b>");
+  meta.push("Verified (Blockscout): <b>" + esc(ver.status || "-") + "</b>" +
+    (checks.chain ? " &middot; chainId: <b>" + esc(checks.chain.actual === null ? "no result" : checks.chain.actual) + " / expected " + esc(checks.chain.expected) + "</b>" : ""));
+  out.innerHTML =
+    "<div class=\"card\"><div class=\"verdict " + esc(j.verdict) + "\">" + esc(j.verdict) + "</div>" +
+    "<p class=\"addr\">" + esc(j.address || addrInput) + " on " + esc(j.chain_name || currentChain) + "</p>" +
+    "<p class=\"meta\">" + meta.join("<br>") + "</p>" +
+    (explorer ? "<p class=\"meta\"><a href=\"" + esc(explorer) + "\" target=\"_blank\" rel=\"noopener\">View this address on Blockscout</a></p>" : "") +
+    "<ul class=\"reasons\">" + reasons + "</ul>" +
+    "<details><summary>Raw JSON</summary><pre>" + esc(JSON.stringify(j, null, 2)) + "</pre></details></div>";
+}
+
+btn.onclick = async () => {
+  const addr = document.getElementById("addr").value.trim();
+  btn.disabled = true; btn.textContent = "Scanning from your browser...";
+  out.innerHTML = "";
+  try {
+    const j = await scanAddress(addr, currentChain);
+    render(j, addr);
+  } catch (e) {
+    // Last-resort guard: scanAddress handles its own failures, but if
+    // anything unexpected throws, the honest verdict is UNKNOWN.
+    out.innerHTML = "<div class=\"card\"><div class=\"verdict UNKNOWN\">UNKNOWN</div>" +
+      "<p>Scan failed unexpectedly: " + esc(e && e.message ? e.message : e) + " - the contract was NOT checked.</p></div>";
+  }
+  btn.disabled = false; btn.textContent = "Scan contract";
+};
+document.getElementById("addr").addEventListener("keydown", (e) => { if (e.key === "Enter") btn.click(); });
+</script>
+</body>
+</html>

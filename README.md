@@ -8,6 +8,8 @@ There are mature scanners on Base and BSC. On Robinhood Chain, retail traders we
 
 It reads the chain, checks the basics, and tells you in plain words: **CLEAR**, **CAUTION**, **BLOCKED**, or **UNKNOWN**, with every reason listed. It never signs anything. It never asks for a key. It just reads, checks, and shows its work.
 
+**Use it in your browser, no install:** https://georgeonweb3.github.io/robinhood-scanner/ - the web version runs the same checks entirely in your browser (source in `docs/`), free basic scan.
+
 Built by George Agbe, reusing the verdict pattern from Preflight (his BSC/Base mint precheck, CLEAR/CAUTION/BLOCKED with itemised reasons).
 
 ## What it checks
