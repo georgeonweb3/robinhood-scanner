@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robinhood Chain Safety Scanner</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:32px auto;padding:0 16px;background:#0b0f0c;color:#e8f0e8}
+  h1{font-size:24px;margin-bottom:4px} .sub{color:#9db89d;margin-bottom:20px}
+  label{display:block;margin:12px 0 6px} input,select{width:100%;padding:12px;border-radius:8px;border:1px solid #2a3a2a;background:#121812;color:#fff;box-sizing:border-box}
+  button{margin-top:14px;padding:12px 20px;border:0;border-radius:8px;background:#00c853;color:#041204;font-weight:700;cursor:pointer;width:100%}
+  button:disabled{opacity:.6}
+  .card{margin-top:20px;padding:16px;border-radius:12px;background:#141a14;border:1px solid #243324}
+  .verdict{font-size:28px;font-weight:800;letter-spacing:.5px}
+  .CLEAR{color:#00e676}.CAUTION{color:#ffca28}.BLOCKED{color:#ff5252}.UNKNOWN{color:#b0bec5}
+  ul{padding-left:18px} li{margin:6px 0;line-height:1.45}
+  .note{color:#9db89d;font-size:13px;margin-top:12px;line-height:1.5}
+  pre{white-space:pre-wrap;word-break:break-all;background:#0b0f0c;padding:10px;border-radius:8px;font-size:12px}
+</style>
+</head>
+<body>
+<h1>Robinhood Chain Safety Scanner</h1>
+<div class="sub">Paste a contract. Get CLEAR / CAUTION / BLOCKED / UNKNOWN with receipts. Read-only, never signs. Sellability is not faked — see the note in every report.</div>
+
+<label for="addr">Contract address</label>
+<input id="addr" placeholder="0x..." autocomplete="off" spellcheck="false">
+<label for="chain">Chain</label>
+<select id="chain"><option value="robinhood">Robinhood Chain (4663)</option><option value="robinhood-testnet">Robinhood Testnet (46630)</option></select>
+<button id="go">Check contract</button>
+<div id="out"></div>
+<div class="note">Free tier: basic scan. Pro $9/mo: unlimited scans, new-pool alerts, history. This is not financial advice and not an audit. A CLEAR means nothing this scanner checks tripped.</div>
+<script>
+const out=document.getElementById('out');
+document.getElementById('go').onclick=async()=>{
+  const addr=document.getElementById('addr').value.trim();
+  const chain=document.getElementById('chain').value;
+  const btn=document.getElementById('go'); btn.disabled=true; btn.textContent='Checking...';
+  out.innerHTML='';
+  try{
+    const r=await fetch(`/api/check?address=${encodeURIComponent(addr)}&chain=${encodeURIComponent(chain)}`);
+    const j=await r.json();
+    const reasons=(j.reasons||[]).map(x=>`<li><b>${x.level.toUpperCase()} — ${x.code}:</b> ${x.message}</li>`).join('');
+    const ident=j.checks&&j.checks.identity?j.checks.identity:{};
+    const dep=j.checks&&j.checks.deployment?j.checks.deployment:{};
+    out.innerHTML=`<div class="card"><div class="verdict ${j.verdict}">${j.verdict}</div>
+      <p>${j.address||addr} on ${j.chain_name||chain}</p>
+      <p>Contract: ${dep.is_contract} · Size: ${dep.code_size_bytes} bytes · Proxy: ${dep.is_proxy_eip1967}<br>
+      Token: ${ident.name||'-'} (${ident.symbol||'-'}) · Owner: ${ident.owner||'-'}<br>
+      Verified: ${j.checks&&j.checks.verification?j.checks.verification.status:'-'}</p>
+      <ul>${reasons}</ul>
+      <details><summary>Raw JSON</summary><pre>${JSON.stringify(j,null,2)}</pre></details></div>`;
+  }catch(e){ out.innerHTML=`<div class="card"><div class="verdict UNKNOWN">UNKNOWN</div><p>Request failed: ${e} — the contract was not checked.</p></div>`; }
+  btn.disabled=false; btn.textContent='Check contract';
+};
+</script>
+</body>
+</html>
